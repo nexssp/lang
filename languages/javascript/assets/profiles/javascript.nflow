@@ -1,0 +1,14 @@
+@description "JavaScript / Node.js. Uses node or bun directly, then `deno run`."
+@symbols runner {
+  id: "javascript"
+}
+@lang.runner "javascript" {
+  ext: ".js"
+  aliases: ["js", "node"]
+  find: ["node", "bun", "deno run"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/javascript.js"
+  install_windows: ["winget", "install", "OpenJS.NodeJS.LTS"]
+  install_darwin: ["brew", "install", "node"]
+}

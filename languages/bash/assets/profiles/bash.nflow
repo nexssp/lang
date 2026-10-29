@@ -1,0 +1,11 @@
+@description "Bash runner. Requires Bash to be installed and discoverable on PATH."
+@symbols runner {
+  id: "bash"
+}
+@lang.runner "bash" {
+  ext: ".sh"
+  aliases: ["bash"]
+  find: ["bash"]
+  stdin: "text"
+  stdout: "text"
+}

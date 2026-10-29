@@ -1,0 +1,15 @@
+@description "TypeScript. prefers bun (fast, runs .ts directly), then tsx, then ts-node. npm is cross-distro so Linux gets a recipe."
+@symbols runner {
+  id: "typescript"
+}
+@lang.runner "typescript" {
+  ext: ".ts"
+  aliases: ["ts", "typescript"]
+  find: ["bun", "tsx", "ts-node"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/typescript.ts"
+  install_windows: ["npm", "install", "-g", "tsx"]
+  install_darwin: ["npm", "install", "-g", "tsx"]
+  install_linux: ["npm", "install", "-g", "tsx"]
+}

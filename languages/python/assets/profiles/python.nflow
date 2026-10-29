@@ -1,0 +1,17 @@
+@description "Python (default). PEP 723 scripts use uv when the marker is present."
+@symbols runner {
+  id: "python"
+}
+@lang.runner "python" {
+  ext: ".py"
+  aliases: ["py", "python"]
+  find: ["python3", "python", "py -3"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/python.py"
+  deps: "uv run {file}"
+  deps_marker: "# /// script"
+  install_windows: ["winget", "install", "Python.Python.3.12"]
+  install_darwin: ["brew", "install", "python@3.12"]
+  install_linux: ["apt-get", "install", "-y", "python3"]
+}

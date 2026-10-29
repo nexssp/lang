@@ -1,0 +1,12 @@
+@description "Explicit WSL Bash runner. Select this alias only when WSL is installed and configured."
+@symbols runner {
+  id: "wsl"
+}
+@lang.runner "wsl" {
+  ext: ".sh"
+  aliases: ["wsl"]
+  find: ["wsl bash"]
+  file_path_mode: "wsl"
+  stdin: "text"
+  stdout: "text"
+}

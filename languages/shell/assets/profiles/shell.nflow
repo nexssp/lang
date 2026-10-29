@@ -1,0 +1,11 @@
+@description "POSIX sh runner. Requires sh on PATH; no automatic installation is configured."
+@symbols runner {
+  id: "shell"
+}
+@lang.runner "shell" {
+  ext: ".sh"
+  aliases: ["sh"]
+  find: ["sh"]
+  stdin: "text"
+  stdout: "text"
+}

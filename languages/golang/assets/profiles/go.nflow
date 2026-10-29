@@ -1,0 +1,14 @@
+@description "Go single-file runner. `go run` compiles and executes the materialized source."
+@symbols runner {
+  id: "go"
+}
+@lang.runner "go" {
+  ext: ".go"
+  aliases: ["go", "golang"]
+  find: ["go run"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/go.go"
+  install_windows: ["winget", "install", "GoLang.Go"]
+  install_darwin: ["brew", "install", "go"]
+}

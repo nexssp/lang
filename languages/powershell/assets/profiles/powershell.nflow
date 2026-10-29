@@ -1,0 +1,12 @@
+@description "PowerShell runner. Prefers PowerShell 7 (pwsh), then Windows PowerShell."
+@symbols runner {
+  id: "powershell"
+}
+@lang.runner "powershell" {
+  ext: ".ps1"
+  aliases: ["ps", "powershell", "pwsh"]
+  find: ["pwsh -File", "powershell -File"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/powershell.ps1"
+}

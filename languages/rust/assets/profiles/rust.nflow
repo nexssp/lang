@@ -1,0 +1,15 @@
+@description "Rust single-file scripts via rust-script; source must include a main function."
+@symbols runner {
+  id: "rust"
+}
+@lang.runner "rust" {
+  ext: ".rs"
+  aliases: ["rs", "rust"]
+  find: ["rust-script"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/rust.rs"
+  install_windows: ["cargo", "install", "rust-script"]
+  install_darwin: ["cargo", "install", "rust-script"]
+  install_linux: ["cargo", "install", "rust-script"]
+}

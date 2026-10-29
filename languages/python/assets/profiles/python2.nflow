@@ -1,0 +1,13 @@
+@description "Python 2 is end-of-life; detect it when installed but do not auto-install it."
+@symbols runner {
+  id: "python"
+  version: "2"
+}
+@lang.runner "python" "2" {
+  ext: ".py"
+  aliases: ["py2", "python2"]
+  find: ["python2", "py -2"]
+  stdin: "json"
+  stdout: "json"
+  file_template_file: "templates/python2.py"
+}
