@@ -17,7 +17,7 @@ func resolveRunCmd(ctx context.Context, language *Language, program *Program, fi
 		return depCmd, depArgs, depErr
 	}
 
-	cmd, args, err = resolveContext(ctx, language, program.Version)
+	cmd, args, err = resolveContext(ctx, *language, program.Version)
 	if err != nil {
 		return "", nil, err
 	}

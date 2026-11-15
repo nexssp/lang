@@ -2,6 +2,8 @@ package core
 
 import (
 	"testing"
+
+	"github.com/nexssp/kernel/xerr"
 )
 
 // TestAliasUnknownTag ensures unknown tags return ok=false rather than panicking.
@@ -17,8 +19,8 @@ func TestAliasUnknownTag(t *testing.T) {
 // runner files, not hand-maintained. After LoadRunners, every alias
 // resolves to its runner's (ID, Version).
 func TestAliasDerivedFromRunners(t *testing.T) {
-	for k := range Registry {
-		delete(Registry, k)
+	for k := range registry {
+		delete(registry, k)
 	}
 	aliases = nil
 	if err := LoadRunners(); err != nil {
@@ -33,16 +35,15 @@ func TestAliasDerivedFromRunners(t *testing.T) {
 	}
 }
 
-// TestAliasDuplicatePanics asserts two runner files claiming the same alias
-// panic at registration. Silent override would let a stale entry win.
-func TestAliasDuplicatePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("registerAlias with duplicate tag did not panic")
-		}
-	}()
-	registerAlias("py", "python", "") // already registered by LoadRunners
-	registerAlias("py", "rust", "")   // should panic
+// TestAliasDuplicateReturnsConflict ensures duplicate aliases are reported
+// without panicking or replacing the original mapping.
+func TestAliasDuplicateReturnsConflict(t *testing.T) {
+	if err := registerAlias("py", "rust", ""); xerr.KindFrom(err) != xerr.KindConflict {
+		t.Fatalf("duplicate alias error = %v; want Conflict", err)
+	}
+	if id, _, ok := ResolveAlias("py"); !ok || id != "python" {
+		t.Fatalf("duplicate registration changed @py to %q, %t; want python, true", id, ok)
+	}
 }
 
 // TestAllAliasesSorted asserts allAliases returns sorted-by-tag output.

@@ -34,6 +34,9 @@ var runnerAssetSources = []fs.FS{
 
 var runnersFS = buildRunnerFiles()
 
+// buildRunnerFiles combines compile-time embedded assets. A failure here is
+// invalid built-in package data during initialization, before runtime callers
+// can receive an error.
 func buildRunnerFiles() fstest.MapFS {
 	files := fstest.MapFS{}
 	copyFile := func(target string, data []byte) {

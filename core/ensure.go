@@ -10,37 +10,53 @@ import (
 	"github.com/nexssp/kernel/xerr"
 )
 
-// Ensure is the auto-install seam.
-//
-// Resolve calls Ensure when a language's Select (find-only) fails. The
-// default installEnsure runs the runner's per-OS recipe and re-resolves the
-// interpreter; tests or hosts can replace the hook when needed.
+// Ensure is the context-aware auto-install seam. Implementations must not start
+// work for an already-canceled context and must honor cancellation while work
+// is running. Language is passed by value so an installer cannot mutate the
+// registry's stored language.
 //
 // Pure Go: no nexssp/ensure, no Node.js. Recipes call winget/brew/apt/npm
 // directly. See install.go.
 type Ensure interface {
-	Ensure(lang *Language, version string) (cmd string, args []string, err error)
+	Ensure(ctx context.Context, lang Language, version string) (cmd string, args []string, err error)
 }
 
-// EnsureFunc adapts a function to the Ensure interface.
-type EnsureFunc func(*Language, string) (string, []string, error)
+// EnsureFunc adapts a context-aware function to the Ensure interface.
+type EnsureFunc func(context.Context, Language, string) (string, []string, error)
 
 // Ensure implements Ensure.
-func (f EnsureFunc) Ensure(language *Language, version string) (cmd string, args []string, err error) {
-	return f(language, version)
+func (f EnsureFunc) Ensure(ctx context.Context, language Language, version string) (cmd string, args []string, err error) {
+	return f(ctx, language, version)
+}
+
+func ensureWithContext(ctx context.Context, installer Ensure, lang Language, version string) (cmd string, args []string, err error) {
+	if ctx == nil {
+		return "", nil, xerr.Validation("ensure context is required")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
+	cmd, args, err = installer.Ensure(ctx, lang, version)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
+	return cmd, args, err
 }
 
 // ensureHook is the package-level seam. Production automatically installs
 // through runner recipes; tests can replace it with a deterministic stub.
 var ensureHook Ensure = installEnsure{}
 
-// DefaultEnsure returns the production installer, which executes the current
-// platform's recipe declared by the runner profile and then resolves again.
+// DefaultEnsure returns the production context-aware installer, which executes
+// the profile's platform recipe and re-resolves the interpreter.
 func DefaultEnsure() Ensure { return installEnsure{} }
 
 type noEnsure struct{}
 
-func (noEnsure) Ensure(lang *Language, version string) (cmd string, args []string, err error) {
+func (noEnsure) Ensure(ctx context.Context, lang Language, version string) (cmd string, args []string, err error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
 	return "", nil, &NotInstalledError{ID: lang.ID, Version: version}
 }
 
@@ -104,32 +120,34 @@ func isWindowsStorePythonAlias(path string) bool {
 	return name == "python" || name == "python3"
 }
 
-// Resolve is the default runtime entry point for "give me a runnable command."
-//
-// It tries a find-only selector, preferring SelectContext when available. On
-// miss, it calls ensureHook, which installs and re-resolves by default or
-// returns a NotInstalledError if the runner has no recipe or installation
-// fails. Context-scoped internal callers may disable installation without
-// changing this production default. Preflight uses the find-only selector
-// directly and never triggers installation.
-func Resolve(lang *Language, version string) (cmd string, args []string, err error) {
-	if lang == nil {
-		return "", nil, &NotInstalledError{Version: version, Cause: xerr.Validation("nil language")}
-	}
-	return resolveContext(context.Background(), lang, version)
+// Resolve is a non-cancelable convenience wrapper using context.Background.
+// Use ResolveContext when the operation must be canceled by its caller.
+func Resolve(lang Language, version string) (cmd string, args []string, err error) {
+	return ResolveContext(context.Background(), lang, version)
 }
 
-func resolveContext(ctx context.Context, lang *Language, version string) (cmd string, args []string, err error) {
-	if lang == nil {
-		return "", nil, &NotInstalledError{Version: version, Cause: xerr.Validation("nil language")}
+// ResolveContext selects an interpreter and, on a miss, installs it using ctx.
+// Selector and installer implementations on this path receive the same context.
+func ResolveContext(ctx context.Context, lang Language, version string) (cmd string, args []string, err error) {
+	if ctx == nil {
+		return "", nil, xerr.Validation("resolve context is required")
 	}
-	if lang.Select == nil && lang.SelectContext == nil {
+	return resolveContext(ctx, lang, version)
+}
+
+func resolveContext(ctx context.Context, lang Language, version string) (cmd string, args []string, err error) {
+	if ctx == nil {
+		return "", nil, xerr.Validation("resolve context is required")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
+	if lang.SelectContext == nil {
 		return "", nil, &NotInstalledError{ID: lang.ID, Version: version, Cause: xerr.Internal("runner has no command selector")}
 	}
-	if lang.SelectContext != nil {
-		cmd, args, err = lang.SelectContext(ctx, version)
-	} else {
-		cmd, args, err = lang.Select(version)
+	cmd, args, err = lang.SelectContext(ctx, version)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
 	}
 	if err == nil {
 		return cmd, args, nil
@@ -137,5 +155,5 @@ func resolveContext(ctx context.Context, lang *Language, version string) (cmd st
 	if autoInstallDisabled(ctx) {
 		return "", nil, &NotInstalledError{ID: lang.ID, Version: version, Cause: ErrNotFound}
 	}
-	return ensureHook.Ensure(lang, version)
+	return ensureWithContext(ctx, ensureHook, lang, version)
 }

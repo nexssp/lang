@@ -3,8 +3,13 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestRecipeFor asserts the per-OS recipe lookup. We can't fake runtime.GOOS
@@ -62,12 +67,12 @@ func TestInstallEnsureNoRecipe(t *testing.T) {
 	installerHook = fi
 	defer func() { installerHook = oldInstaller }()
 
-	lang := &Language{
-		ID:      "no-recipe-lang",
-		install: OSRecipe{}, // no recipe
-		Select:  func(string) (string, []string, error) { return "", nil, ErrNotFound },
+	lang := Language{
+		ID:            "no-recipe-lang",
+		install:       OSRecipe{}, // no recipe
+		SelectContext: func(context.Context, string) (string, []string, error) { return "", nil, ErrNotFound },
 	}
-	_, _, err := installEnsure{}.Ensure(lang, "")
+	_, _, err := installEnsure{}.Ensure(context.Background(), lang, "")
 	if err == nil {
 		t.Fatal("Ensure returned nil for no-recipe language")
 	}
@@ -91,7 +96,7 @@ func TestInstallEnsureRecipeFails(t *testing.T) {
 	installerHook = fi
 	defer func() { installerHook = oldInstaller }()
 
-	lang := &Language{
+	lang := Language{
 		ID: "failing-recipe-lang",
 		install: OSRecipe{
 			// Set all three so RecipeFor returns something on any OS.
@@ -99,9 +104,9 @@ func TestInstallEnsureRecipeFails(t *testing.T) {
 			Darwin:  []string{"brew", "install", "x"},
 			Linux:   []string{"apt", "install", "x"},
 		},
-		Select: func(string) (string, []string, error) { return "", nil, ErrNotFound },
+		SelectContext: func(context.Context, string) (string, []string, error) { return "", nil, ErrNotFound },
 	}
-	_, _, err := installEnsure{}.Ensure(lang, "")
+	_, _, err := installEnsure{}.Ensure(context.Background(), lang, "")
 	if err == nil {
 		t.Fatal("Ensure returned nil for failing recipe")
 	}
@@ -123,7 +128,7 @@ func TestInstallEnsureSuccess(t *testing.T) {
 	defer func() { installerHook = oldInstaller }()
 
 	selectCalls := 0
-	lang := &Language{
+	lang := Language{
 		ID: "success-recipe-lang",
 		install: OSRecipe{
 			Windows: []string{"winget", "install", "x"},
@@ -131,12 +136,12 @@ func TestInstallEnsureSuccess(t *testing.T) {
 			Linux:   []string{"apt", "install", "x"},
 		},
 		// First Select call (during Ensure's re-resolve) succeeds.
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			selectCalls++
 			return "/usr/bin/installed-binary", nil, nil
 		},
 	}
-	cmd, _, err := installEnsure{}.Ensure(lang, "")
+	cmd, _, err := installEnsure{}.Ensure(context.Background(), lang, "")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -160,18 +165,18 @@ func TestInstallEnsurePathNotRefreshed(t *testing.T) {
 	installerHook = fi
 	defer func() { installerHook = oldInstaller }()
 
-	lang := &Language{
+	lang := Language{
 		ID: "path-stale-lang",
 		install: OSRecipe{
 			Windows: []string{"winget", "install", "x"},
 			Darwin:  []string{"brew", "install", "x"},
 			Linux:   []string{"apt", "install", "x"},
 		},
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			return "", nil, ErrNotFound // still missing after install
 		},
 	}
-	_, _, err := installEnsure{}.Ensure(lang, "")
+	_, _, err := installEnsure{}.Ensure(context.Background(), lang, "")
 	if err == nil {
 		t.Fatal("Ensure returned nil when Select still missed after install")
 	}
@@ -182,4 +187,144 @@ func TestInstallEnsurePathNotRefreshed(t *testing.T) {
 	if !strings.Contains(nie.Error(), "shell restart") {
 		t.Errorf("error = %q; want 'shell restart' hint", nie)
 	}
+}
+
+type blockingInstaller struct {
+	started chan struct{}
+}
+
+func (i blockingInstaller) Run(ctx context.Context, _ string, _ []string) error {
+	close(i.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestInstallContextCancellation(t *testing.T) {
+	const id = "install-context-cancel-test"
+	selectCalled := false
+	registerTestLanguage(t, Language{
+		ID: id,
+		install: OSRecipe{
+			Windows: []string{"installer", "install"},
+			Darwin:  []string{"installer", "install"},
+			Linux:   []string{"installer", "install"},
+		},
+		SelectContext: func(context.Context, string) (string, []string, error) {
+			selectCalled = true
+			return "", nil, nil
+		},
+	})
+	t.Cleanup(func() {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		delete(registry, id)
+	})
+
+	started := make(chan struct{})
+	oldInstaller := installerHook
+	installerHook = blockingInstaller{started: started}
+	defer func() { installerHook = oldInstaller }()
+
+	preCanceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := InstallContext(preCanceled, id, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled InstallContext error = %v; want context.Canceled", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("installer started for a pre-canceled context")
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := InstallContext(ctx, id, "")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("installer did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("InstallContext error = %v; want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("InstallContext did not return after cancellation")
+	}
+	if selectCalled {
+		t.Fatal("interpreter was re-resolved after installation was canceled")
+	}
+}
+
+func TestDefaultInstallerRunStopsCanceledDirectChild(t *testing.T) {
+	const helperEnv = "NEXSS_LANG_INSTALLER_HELPER"
+	const parentPIDEnv = "NEXSS_LANG_INSTALLER_PARENT_PID"
+	if os.Getenv(helperEnv) == "direct-child-helper" {
+		parentPID, err := strconv.Atoi(os.Getenv(parentPIDEnv))
+		if err != nil || parentPID <= 0 {
+			t.Fatalf("invalid parent process ID: %v", err)
+		}
+		if err := os.WriteFile(installerReadyPath(parentPID), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentPID := os.Getpid()
+	readyPath := installerReadyPath(parentPID)
+	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(readyPath) })
+	t.Setenv(helperEnv, "direct-child-helper")
+	t.Setenv(parentPIDEnv, strconv.Itoa(parentPID))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- (defaultInstaller{}).Run(ctx, executable, []string{"-test.run=^TestDefaultInstallerRunStopsCanceledDirectChild$"})
+	}()
+
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		select {
+		case runErr := <-result:
+			t.Fatalf("helper process exited before cancellation: %v", runErr)
+		case <-ticker.C:
+		case <-deadline:
+			cancel()
+			t.Fatal("helper process did not start")
+		}
+	}
+
+	cancel()
+	select {
+	case runErr := <-result:
+		if runErr == nil {
+			t.Fatal("canceled installer process returned nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("default installer did not stop after cancellation")
+	}
+}
+
+func installerReadyPath(parentPID int) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("nexss-lang-installer-%d-ready", parentPID))
 }

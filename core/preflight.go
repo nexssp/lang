@@ -13,8 +13,8 @@ import (
 // Preflight checks interpreter availability for a set of programs. It has no
 // compiler or AST dependency; host adapters decide when and how to invoke it.
 type Preflight struct {
-	// Installer, if non-nil, is invoked for missing interpreters. A nil
-	// Installer keeps preflight find-only.
+	// Installer, if non-nil, is invoked for missing interpreters with
+	// RunContext's context. A nil Installer keeps preflight find-only.
 	Installer Ensure
 }
 
@@ -83,14 +83,13 @@ func (r Report) Error() string {
 	return b.String()
 }
 
-// Run checks each distinct (ID, Version) pair in programs, sorting results for
-// deterministic diagnostics. When configured, Installer handles missing
-// interpreters before the report is returned.
+// Run is a non-cancelable convenience wrapper using context.Background. Use
+// RunContext when preflight or installation must be canceled by the caller.
 func (p Preflight) Run(programs []Program) Report {
 	return p.RunContext(context.Background(), programs)
 }
 
-// RunContext checks interpreter availability using the caller's context.
+// RunContext checks interpreter availability using the caller's non-nil context.
 func (p Preflight) RunContext(ctx context.Context, programs []Program) Report {
 	seen := make(map[string]*Check, len(programs))
 	for i := range programs {
@@ -106,22 +105,30 @@ func (p Preflight) RunContext(ctx context.Context, programs []Program) Report {
 			seen[key] = check
 			continue
 		}
-		if cmd, _, handled, depErr := resolveDepsCmd(language, program.Source, "<source>"); handled {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			check.Err = ctxErr
+			seen[key] = check
+			continue
+		}
+		if cmd, _, handled, depErr := resolveDepsCmd(&language, program.Source, "<source>"); handled {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				depErr = ctxErr
+			}
 			check.Cmd, check.Err = cmd, depErr
 			seen[key] = check
 			continue
 		}
-		switch {
-		case language.SelectContext != nil:
-			check.Cmd, _, check.Err = language.SelectContext(ctx, program.Version)
-		case language.Select != nil:
-			check.Cmd, _, check.Err = language.Select(program.Version)
-		default:
+		if language.SelectContext == nil {
 			check.Err = &NotInstalledError{ID: language.ID, Version: program.Version, Cause: xerr.Internal("runner has no command selector")}
+		} else {
+			check.Cmd, _, check.Err = language.SelectContext(ctx, program.Version)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			check.Err = ctxErr
 		}
 		seen[key] = check
-		if check.Err != nil && p.Installer != nil && ctx != nil && ctx.Err() == nil {
-			if cmd, _, installErr := p.Installer.Ensure(language, program.Version); installErr == nil {
+		if check.Err != nil && p.Installer != nil && ctx.Err() == nil {
+			if cmd, _, installErr := ensureWithContext(ctx, p.Installer, language, program.Version); installErr == nil {
 				check.Cmd, check.Err = cmd, nil
 			} else {
 				check.Err = installErr

@@ -34,20 +34,32 @@ func (defaultInstaller) Run(ctx context.Context, cmd string, args []string) erro
 	c := exec.CommandContext(ctx, cmd, args...)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
+	// CommandContext kills the directly launched process on cancellation. It
+	// does not guarantee termination of descendants spawned by that process.
 	return c.Run()
 }
 
 var installerHook installer = defaultInstaller{}
 
-// Ensure implements Ensure. Tries the recipe, re-resolves, returns.
+// Ensure runs the recipe and re-resolves the interpreter using ctx.
 //
-// Failure modes (all return NotInstalledError so preflight groups them):
+// Installation failures return NotInstalledError so preflight can group them;
+// cancellation returns ctx.Err directly. The default installer terminates the
+// launched process when canceled; descendants are not guaranteed to terminate.
+//
+// Failure modes:
 //   - no recipe for this OS  -> NotInstalledError with "no auto-install"
 //   - recipe command missing -> NotInstalledError with the underlying error
 //   - recipe exits non-zero  -> NotInstalledError with stderr
 //   - recipe runs, LookPath still fails -> NotInstalledError (PATH not
 //     refreshed in this process — common on Windows after winget)
-func (installEnsure) Ensure(lang *Language, version string) (cmd string, args []string, err error) {
+func (installEnsure) Ensure(ctx context.Context, lang Language, version string) (cmd string, args []string, err error) {
+	if ctx == nil {
+		return "", nil, xerr.Validation("install context is required")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
 	recipe := lang.install.RecipeFor()
 	if len(recipe) == 0 {
 		return "", nil, &NotInstalledError{
@@ -55,22 +67,28 @@ func (installEnsure) Ensure(lang *Language, version string) (cmd string, args []
 			Cause: xerr.NotFound(fmt.Sprintf("no auto-install recipe for %s on %s; install manually", lang.ID, runtime.GOOS)),
 		}
 	}
-	if runErr := installerHook.Run(context.Background(), recipe[0], recipe[1:]); runErr != nil {
+	if runErr := installerHook.Run(ctx, recipe[0], recipe[1:]); runErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", nil, ctxErr
+		}
 		return "", nil, &NotInstalledError{
 			ID: lang.ID, Version: version,
 			Cause: xerr.Unavailable(fmt.Sprintf("install recipe %v failed", recipe), runErr),
 		}
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
 	// Re-resolve via the find-only selector. No recursion into Ensure.
-	switch {
-	case lang.SelectContext != nil:
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd, args, err = lang.SelectContext(ctx, version)
-	case lang.Select != nil:
-		cmd, args, err = lang.Select(version)
-	default:
+	if lang.SelectContext == nil {
 		err = xerr.Internal("runner has no command selector")
+	} else {
+		selectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		cmd, args, err = lang.SelectContext(selectCtx, version)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
 	}
 	if err == nil {
 		return cmd, args, nil
@@ -81,12 +99,23 @@ func (installEnsure) Ensure(lang *Language, version string) (cmd string, args []
 	}
 }
 
-// Install is the package-level entry point used by `nflow lang install <id>`.
-// Wraps installEnsure so callers don't construct the type.
+// Install is a non-cancelable convenience wrapper using context.Background.
+// Use InstallContext when the operation must be canceled by its caller.
 func Install(id, version string) (cmd string, args []string, err error) {
+	return InstallContext(context.Background(), id, version)
+}
+
+// InstallContext installs the registered language with caller cancellation.
+func InstallContext(ctx context.Context, id, version string) (cmd string, args []string, err error) {
+	if ctx == nil {
+		return "", nil, xerr.Validation("install context is required")
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", nil, ctxErr
+	}
 	lang, lookupErr := Lookup(id, version)
 	if lookupErr != nil {
 		return "", nil, lookupErr
 	}
-	return installEnsure{}.Ensure(lang, version)
+	return installEnsure{}.Ensure(ctx, lang, version)
 }

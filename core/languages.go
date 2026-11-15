@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nexssp/kernel/xerr"
 )
@@ -23,11 +25,8 @@ type Language struct {
 	// including the leading dot, e.g. ".py".
 	Ext string
 
-	// Select is the legacy context-free, find-only selector for languages
-	// registered directly. Runner profiles use SelectContext instead.
-	Select func(version string) (cmd string, args []string, err error)
 	// SelectContext resolves a version while honoring the caller's context.
-	// Runtime and preflight resolution prefer this selector when available.
+	// Runtime and preflight resolution always pass their caller's context.
 	SelectContext func(ctx context.Context, version string) (cmd string, args []string, err error)
 
 	// Encode serializes the incoming stream value to bytes for stdin.
@@ -50,17 +49,12 @@ type Language struct {
 	install OSRecipe
 }
 
-// Registry is the process-global table of known languages. Populated at
-// init() by LoadRunners (from embedded runners/*.nflow) and at parse time
-// by RegisterDefine (define.go) when @lang.define is used.
-//
-// Keyed by (ID, Version) — versioned variants of the same language
-// (python "", python "2", python "3") are distinct entries. The
-// unversioned Lookup(id, "") returns the default variant.
-//
-// Two languages with the same (ID, Version) panic — silent override would
-// let a stale registration win and produce confusing runtime behavior.
-var Registry = map[string]*Language{}
+// registry is the process-global table of known languages. Values and their
+// private runner data are copied at registration and lookup boundaries.
+var (
+	registry   = make(map[string]Language)
+	registryMu sync.RWMutex
+)
 
 // registryKey returns the map key for an (ID, Version) pair.
 // "python" with version "" -> "python"
@@ -72,33 +66,97 @@ func registryKey(id, version string) string {
 	return id + "@" + version
 }
 
-// Register adds a language to the Registry. Duplicate (ID, Version) panic,
-// matching the project rule: "collisions panic; missing contracts fail
-// loudly."
-func Register(l Language) {
-	if l.ID == "" {
-		panic("lang: Language.ID must be non-empty")
-	}
-	key := registryKey(l.ID, l.Version())
-	if _, dup := Registry[key]; dup {
-		panic("lang: language " + key + " already registered")
-	}
-	Registry[key] = &l
+// Register adds a language to the process registry. It returns a Kernel
+// Validation error for an empty ID and a Conflict error for a duplicate
+// (ID, Version). The language value is copied; its SelectContext and codec
+// callbacks may be called concurrently and must be safe for concurrent use.
+// SelectContext must honor ctx.
+func Register(l Language) error {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	return registerLanguageLocked(l)
 }
 
-// Lookup returns the registered language for an (ID, Version) pair. The
-// exact version is matched — Lookup("python", "3") returns the v3 variant,
-// Lookup("python", "") returns the default.
-func Lookup(id, version string) (*Language, error) {
-	l, ok := Registry[registryKey(id, version)]
+// Unregister removes an exact language version and all of its aliases.
+// Previously returned Language values remain valid snapshots. It returns
+// false when the language is not registered.
+func Unregister(id, version string) bool {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	key := registryKey(id, version)
+	if _, ok := registry[key]; !ok {
+		return false
+	}
+	delete(registry, key)
+	kept := aliases[:0]
+	for _, alias := range aliases {
+		if alias.ID != id || alias.Version != version {
+			kept = append(kept, alias)
+		}
+	}
+	aliases = kept
+	return true
+}
+
+// registerLanguageLocked adds a language while registryMu is held.
+func registerLanguageLocked(l Language) error {
+	if l.ID == "" {
+		return xerr.Validation("lang: Language.ID must be non-empty")
+	}
+	key := registryKey(l.ID, l.Version())
+	if _, dup := registry[key]; dup {
+		return xerr.Conflict("lang: language " + key + " already registered")
+	}
+	registry[key] = cloneLanguage(l)
+	return nil
+}
+
+// Lookup returns a defensive value copy for an exact (ID, Version) pair.
+// Mutating the returned Language or any data returned by Spec cannot mutate
+// the process registry. Function callbacks are shared function values and
+// must themselves be safe for concurrent use.
+func Lookup(id, version string) (Language, error) {
+	registryMu.RLock()
+	l, ok := registry[registryKey(id, version)]
+	if ok {
+		l = cloneLanguage(l)
+	}
+	registryMu.RUnlock()
 	if !ok {
-		return nil, &UnknownLanguageError{ID: id, Version: version}
+		return Language{}, &UnknownLanguageError{ID: id, Version: version}
 	}
 	return l, nil
 }
 
+// RegisteredLanguages returns stable, sorted defensive copies of all
+// registered languages. It replaces direct iteration over the old exported
+// mutable registry state.
+func RegisteredLanguages() []Language {
+	registryMu.RLock()
+	out := make([]Language, 0, len(registry))
+	for key := range registry {
+		out = append(out, cloneLanguage(registry[key]))
+	}
+	registryMu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Version() < out[j].Version()
+	})
+	return out
+}
+
+func cloneLanguage(language Language) Language {
+	language.spec = cloneRunnerSpec(language.spec)
+	language.install.Windows = append([]string(nil), language.install.Windows...)
+	language.install.Darwin = append([]string(nil), language.install.Darwin...)
+	language.install.Linux = append([]string(nil), language.install.Linux...)
+	return language
+}
+
 // UnknownLanguageError is returned by Lookup and ParseTag when the alias
-// resolves to an (ID, Version) pair the Registry has no entry for. It
+// resolves to an (ID, Version) pair the process registry has no entry for. It
 // surfaces as a compile-time SourceError via the parser hook.
 type UnknownLanguageError struct {
 	ID, Version string

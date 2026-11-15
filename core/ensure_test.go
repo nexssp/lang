@@ -1,17 +1,19 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestResolveHit asserts Resolve returns the command when Select succeeds.
 // No call to Ensure should happen.
 func TestResolveHit(t *testing.T) {
 	called := false
-	lang := &Language{
+	lang := Language{
 		ID: "test-resolve-hit",
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			called = true
 			return "/usr/bin/fake", nil, nil
 		},
@@ -34,9 +36,9 @@ func TestResolveHit(t *testing.T) {
 
 // TestResolveMissCallsEnsure asserts Resolve falls through to Ensure on miss.
 func TestResolveMissCallsEnsure(t *testing.T) {
-	lang := &Language{
+	lang := Language{
 		ID: "test-resolve-miss",
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			return "", nil, ErrNotFound
 		},
 	}
@@ -60,9 +62,9 @@ func TestResolveMissCallsEnsure(t *testing.T) {
 // TestResolveMissReturnsError asserts Resolve returns NotInstalledError
 // when both Select and Ensure fail.
 func TestResolveMissReturnsError(t *testing.T) {
-	lang := &Language{
+	lang := Language{
 		ID: "test-resolve-error",
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			return "", nil, ErrNotFound
 		},
 	}
@@ -127,7 +129,7 @@ func TestIsWindowsStorePythonAlias(t *testing.T) {
 
 type failingEnsure struct{ t *testing.T }
 
-func (f failingEnsure) Ensure(*Language, string) (cmd string, args []string, err error) {
+func (f failingEnsure) Ensure(context.Context, Language, string) (cmd string, args []string, err error) {
 	f.t.Fatal("Ensure should not be called when Select succeeds")
 	return "", nil, nil
 }
@@ -138,7 +140,95 @@ type stubEnsure struct {
 	args   []string
 }
 
-func (s stubEnsure) Ensure(*Language, string) (cmd string, args []string, err error) {
+func (s stubEnsure) Ensure(context.Context, Language, string) (cmd string, args []string, err error) {
 	*s.called = true
 	return s.cmd, s.args, nil
+}
+
+func TestResolveContextCanceledBeforeSelectionSkipsEnsure(t *testing.T) {
+	lang := Language{
+		ID:            "canceled-resolve-test",
+		SelectContext: func(context.Context, string) (string, []string, error) { return "", nil, ErrNotFound },
+	}
+	ensureCalled := false
+	oldHook := ensureHook
+	ensureHook = stubEnsure{called: &ensureCalled}
+	defer func() { ensureHook = oldHook }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := ResolveContext(ctx, lang, "")
+	if !errors.Is(err, context.Canceled) || ensureCalled {
+		t.Fatalf("ResolveContext error=%v ensureCalled=%t; want cancellation without install", err, ensureCalled)
+	}
+}
+
+func TestResolveContextCancelsInFlightSelector(t *testing.T) {
+	started := make(chan struct{})
+	ensureCalled := false
+	oldHook := ensureHook
+	ensureHook = stubEnsure{called: &ensureCalled}
+	defer func() { ensureHook = oldHook }()
+	lang := Language{ID: "inflight-selector-test", SelectContext: func(ctx context.Context, _ string) (string, []string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", nil, ctx.Err()
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := ResolveContext(ctx, lang, "")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("context-aware selector did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) || ensureCalled {
+			t.Fatalf("ResolveContext error=%v ensureCalled=%t; want canceled selector without install", err, ensureCalled)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ResolveContext did not return after selector cancellation")
+	}
+}
+
+func TestResolveContextCancelsInFlightInstaller(t *testing.T) {
+	lang := Language{
+		ID:            "inflight-resolve-test",
+		SelectContext: func(context.Context, string) (string, []string, error) { return "", nil, ErrNotFound },
+	}
+	started := make(chan struct{})
+	oldHook := ensureHook
+	ensureHook = EnsureFunc(func(ctx context.Context, _ Language, _ string) (string, []string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", nil, ctx.Err()
+	})
+	defer func() { ensureHook = oldHook }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := ResolveContext(ctx, lang, "")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("context-aware installer did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResolveContext error = %v; want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ResolveContext did not return after cancellation")
+	}
 }

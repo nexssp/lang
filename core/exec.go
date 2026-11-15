@@ -61,7 +61,7 @@ func Execute(ctx context.Context, program Program, stdin []byte, executor Execut
 	filePath := program.SourceFile
 	runProgram := program
 	if filePath == "" {
-		dir, materializedPath, materializeErr := materialize(ctx, language, program.Source)
+		dir, materializedPath, materializeErr := materialize(ctx, &language, program.Source)
 		if materializeErr != nil {
 			return "", "", materializeErr
 		}
@@ -83,7 +83,7 @@ func Execute(ctx context.Context, program Program, stdin []byte, executor Execut
 		runProgram.Source = string(source)
 	}
 
-	cmd, args, err := resolveRunCmd(ctx, language, &runProgram, filePath)
+	cmd, args, err := resolveRunCmd(ctx, &language, &runProgram, filePath)
 	if err != nil {
 		return "", "", err
 	}

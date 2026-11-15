@@ -1,0 +1,11 @@
+@description "Extract exported declarations from source text with lang.extract."
+@require lang
+@assert: result.func_count == 1
+@assert: result.content == ""
+{
+    path: "sample.go",
+    language: "go",
+    source: "package sample\n\nfunc Exported() {}\nfunc hidden() {}\n",
+    options: { exported_only: true }
+}
+  -> lang.extract

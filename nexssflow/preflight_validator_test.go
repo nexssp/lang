@@ -1,6 +1,7 @@
 package nexssflow
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -14,13 +15,12 @@ func TestPreflightValidatorIgnoresTreesWithoutLangBlocks(t *testing.T) {
 }
 
 func TestPreflightValidatorChecksLanguageBlocks(t *testing.T) {
-	const id = "preflight-validator-present-test"
+	id := uniqueTestLanguageID(t)
 	selectCalls := 0
-	core.Register(core.Language{ID: id, Ext: ".fake", Select: func(string) (string, []string, error) {
+	registerCoreTestLanguage(t, core.Language{ID: id, Ext: ".fake", SelectContext: func(context.Context, string) (string, []string, error) {
 		selectCalls++
 		return "/test/interpreter", nil, nil
 	}})
-	t.Cleanup(func() { delete(core.Registry, id) })
 	ast := &langBlockExpr{block: &LangBlock{ID: id, Source: "source", Tag: "test"}}
 	if err := preflightValidator(core.WithAutoInstallDisabled(t.Context()), ast, nil); err != nil {
 		t.Fatalf("preflightValidator: %v", err)
@@ -31,9 +31,8 @@ func TestPreflightValidatorChecksLanguageBlocks(t *testing.T) {
 }
 
 func TestPreflightValidatorReturnsMissingReportWithoutInstalling(t *testing.T) {
-	const id = "preflight-validator-missing-test"
-	core.Register(core.Language{ID: id, Ext: ".fake", Select: func(string) (string, []string, error) { return "", nil, core.ErrNotFound }})
-	t.Cleanup(func() { delete(core.Registry, id) })
+	id := uniqueTestLanguageID(t)
+	registerCoreTestLanguage(t, core.Language{ID: id, Ext: ".fake", SelectContext: func(context.Context, string) (string, []string, error) { return "", nil, core.ErrNotFound }})
 	ast := &langBlockExpr{block: &LangBlock{ID: id}}
 	err := preflightValidator(core.WithAutoInstallDisabled(t.Context()), ast, nil)
 	var report core.Report
@@ -46,13 +45,12 @@ func TestPreflightValidatorReturnsMissingReportWithoutInstalling(t *testing.T) {
 }
 
 func TestPreflightValidatorIsDisabledForSyntaxOnlyCompilation(t *testing.T) {
-	const id = "preflight-validator-syntax-only-test"
+	id := uniqueTestLanguageID(t)
 	selectCalls := 0
-	core.Register(core.Language{ID: id, Ext: ".fake", Select: func(string) (string, []string, error) {
+	registerCoreTestLanguage(t, core.Language{ID: id, Ext: ".fake", SelectContext: func(context.Context, string) (string, []string, error) {
 		selectCalls++
 		return "", nil, core.ErrNotFound
 	}})
-	t.Cleanup(func() { delete(core.Registry, id) })
 	ast := &langBlockExpr{block: &LangBlock{ID: id}}
 	if err := preflightValidator(WithPreflightDisabled(t.Context()), ast, nil); err != nil {
 		t.Fatalf("syntax-only validator: %v", err)

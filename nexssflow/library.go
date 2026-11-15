@@ -25,12 +25,12 @@ var fixturesFS embed.FS
 
 func init() { compiler.Register(ID, Bundle) }
 
-// Bundle wires language directives, keyword primaries, preflight validation,
-// runner source modules, and existing conformance fixtures into Flow.
+// Bundle wires language directives, keyword primaries, source extraction,
+// preflight validation, runner source modules, and conformance fixtures into Flow.
 func Bundle(_ map[string]string) compiler.Bundle {
 	return compiler.Bundle{
 		ID:              ID,
-		Libraries:       []action.Library{{Name: ID}},
+		Libraries:       []action.Library{{Name: ID, Actions: []action.AnyAction{extractSourceAction}}},
 		Directives:      []compiler.Directive{RunnerDirective, DefineDirective},
 		Fixtures:        bundleFixtureFiles(),
 		SourceModules:   core.RunnerFiles(),

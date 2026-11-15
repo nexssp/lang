@@ -72,8 +72,8 @@ func TestParseRunnerErrors(t *testing.T) {
 // drifts, this fails.
 func TestLoadRunners(t *testing.T) {
 	// Reset registry + aliases; LoadRunners appends to both.
-	for k := range Registry {
-		delete(Registry, k)
+	for k := range registry {
+		delete(registry, k)
 	}
 	aliases = nil
 	if err := LoadRunners(); err != nil {
@@ -82,13 +82,13 @@ func TestLoadRunners(t *testing.T) {
 
 	// Every shipped language must be registered.
 	for _, id := range []string{"python", "rust", "go", "typescript", "javascript", "shell", "bash", "wsl", "powershell"} {
-		if _, ok := Registry[id]; !ok {
+		if _, ok := registry[id]; !ok {
 			t.Errorf("LoadRunners did not register %q", id)
 		}
 	}
 	for _, key := range []string{"python", "python@2", "python@3", "rust", "go", "typescript", "javascript", "powershell"} {
-		language := Registry[key]
-		if language == nil || language.spec == nil || language.spec.FileTemplate == "" {
+		language := registry[key]
+		if language.spec == nil || language.spec.FileTemplate == "" {
 			t.Errorf("runner %q does not declare a file_template", key)
 			continue
 		}
@@ -100,8 +100,8 @@ func TestLoadRunners(t *testing.T) {
 
 // TestLoadRunnersAliases asserts every documented alias resolves.
 func TestLoadRunnersAliases(t *testing.T) {
-	for k := range Registry {
-		delete(Registry, k)
+	for k := range registry {
+		delete(registry, k)
 	}
 	aliases = nil
 	if err := LoadRunners(); err != nil {
@@ -326,7 +326,7 @@ func TestRunnerErrorsUseKernelKinds(t *testing.T) {
 	if err := RegisterRunnerSpec(spec); err != nil {
 		t.Fatalf("RegisterRunnerSpec: %v", err)
 	}
-	t.Cleanup(func() { delete(Registry, id) })
+	t.Cleanup(func() { delete(registry, id) })
 	if err := RegisterRunnerSpec(spec); xerr.KindFrom(err) != xerr.KindConflict {
 		t.Fatalf("duplicate registration error kind = %q; want Conflict", xerr.KindFrom(err))
 	}

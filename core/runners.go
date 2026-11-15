@@ -166,6 +166,8 @@ func isWindowsWSLLauncher(cmd string) bool {
 
 func init() {
 	if err := LoadRunners(); err != nil {
+		// Invalid embedded runner data prevents the package from starting; init
+		// has no error return path.
 		panic("lang: " + err.Error())
 	}
 }
@@ -616,18 +618,31 @@ func validateFileTemplate(spec *RunnerSpec) error {
 // registers it with its aliases. Validate every collision first so a user
 // supplied duplicate cannot leave a partially registered spec.
 func registerSpec(spec *RunnerSpec) error {
+	return registerSpecWithDuplicateError(spec, func(key string) error {
+		return xerr.Conflict(fmt.Sprintf("lang: language %s already registered", key))
+	})
+}
+
+func registerDefinedSpec(spec *RunnerSpec) error {
+	return registerSpecWithDuplicateError(spec, func(_ string) error {
+		return xerr.Conflict(fmt.Sprintf("@lang.define %s: language already registered", spec.ID))
+	})
+}
+
+func registerSpecWithDuplicateError(spec *RunnerSpec, duplicateError func(string) error) error {
 	if err := validateRegistrationSpec(spec); err != nil {
 		return err
 	}
 	spec = cloneRunnerSpec(spec)
 	key := registryKey(spec.ID, spec.Version)
-	if _, dup := Registry[key]; dup {
-		return xerr.Conflict(fmt.Sprintf("lang: language %s already registered", key))
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, dup := registry[key]; dup {
+		return duplicateError(key)
 	}
 	if err := validateRunnerAliases(spec, key); err != nil {
 		return err
 	}
-
 	enc, err := spec.Encode()
 	if err != nil {
 		return err
@@ -645,9 +660,16 @@ func registerSpec(spec *RunnerSpec) error {
 		SelectContext: specContextFunc(spec),
 		install:       spec.Install,
 	}
-	Register(language)
+	aliasStart := len(aliases)
+	if err := registerLanguageLocked(language); err != nil {
+		return err
+	}
 	for _, alias := range spec.Aliases {
-		registerAlias(alias, spec.ID, spec.Version)
+		if err := registerAliasLocked(alias, spec.ID, spec.Version); err != nil {
+			delete(registry, key)
+			aliases = aliases[:aliasStart]
+			return err
+		}
 	}
 	return nil
 }

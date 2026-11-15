@@ -38,14 +38,13 @@ type Define struct {
 	DepsMarker   string   // optional source marker that selects Deps
 }
 
-// RegisterDefine adds a user-defined language to the Registry.
+// RegisterDefine adds a user-defined language to the process registry.
 //
 // Called by the @lang.define directive. Go hosts may also register a language
 // directly before compiling flows.
 //
-// Returns an error rather than panicking: user-defined languages fail
-// gracefully, while builtins (which the developer shipped intentionally)
-// panic on duplicate registration via Register.
+// Returns typed Validation or Conflict errors for invalid definitions and
+// duplicate registrations.
 func RegisterDefine(d Define) error {
 	if d.ID == "" {
 		return xerr.Validation("@lang.define: id is required")
@@ -56,10 +55,6 @@ func RegisterDefine(d Define) error {
 	if len(d.Find) == 0 {
 		return xerr.Validation(fmt.Sprintf("@lang.define %s: find is required", d.ID))
 	}
-	if _, dup := Registry[registryKey(d.ID, d.Version)]; dup {
-		return xerr.Conflict(fmt.Sprintf("@lang.define %s: language already registered", d.ID))
-	}
-
 	// Build a RunnerSpec from Define so the runtime path is unified —
 	// there's exactly one Language construction path, whether the source
 	// is a runner file or an @lang.define block.
@@ -76,5 +71,5 @@ func RegisterDefine(d Define) error {
 		Deps:         d.Deps,
 		DepsMarker:   d.DepsMarker,
 	}
-	return registerSpec(spec)
+	return registerDefinedSpec(spec)
 }

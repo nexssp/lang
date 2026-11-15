@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/nexssp/kernel/xerr"
 )
 
 func TestProgramForTagResolvesAliasWithoutCheckingInterpreter(t *testing.T) {
@@ -42,11 +45,11 @@ func TestFileProgramForTag(t *testing.T) {
 
 func TestExecuteUsesInjectedExecutorAndReturnsRawOutput(t *testing.T) {
 	const id = "core-execute-test"
-	Register(Language{
+	registerTestLanguage(t, Language{
 		ID: id, Ext: ".txt",
-		Select: func(string) (string, []string, error) { return "fake-runner", []string{"--mode"}, nil },
+		SelectContext: func(context.Context, string) (string, []string, error) { return "fake-runner", []string{"--mode"}, nil },
 	})
-	t.Cleanup(func() { delete(Registry, id) })
+	t.Cleanup(func() { delete(registry, id) })
 
 	called := false
 	executor := ExecutorFunc(func(_ context.Context, cmd string, args []string, stdin []byte) (string, string, error) {
@@ -76,8 +79,8 @@ func TestExecuteUsesInjectedExecutorAndReturnsRawOutput(t *testing.T) {
 
 func TestExecuteWrapsSubprocessFailure(t *testing.T) {
 	const id = "core-execute-failure-test"
-	Register(Language{ID: id, Ext: ".txt", Select: func(string) (string, []string, error) { return "runner", nil, nil }})
-	t.Cleanup(func() { delete(Registry, id) })
+	registerTestLanguage(t, Language{ID: id, Ext: ".txt", SelectContext: func(context.Context, string) (string, []string, error) { return "runner", nil, nil }})
+	t.Cleanup(func() { delete(registry, id) })
 	_, stderr, err := Execute(context.Background(), Program{ID: id, Source: "x"}, nil,
 		ExecutorFunc(func(context.Context, string, []string, []byte) (string, string, error) {
 			return "partial", "boom", errors.New("exit 1")
@@ -99,7 +102,7 @@ func TestRegisterDefineAndRunnerSpecCopy(t *testing.T) {
 		t.Fatalf("RegisterDefine: %v", err)
 	}
 	t.Cleanup(func() {
-		delete(Registry, id)
+		delete(registry, id)
 		aliases = removeAlias(aliases, "coredefine")
 	})
 	language, err := Lookup(id, "")
@@ -136,5 +139,104 @@ func TestRegisterDefineRejectsInvalidAndDuplicateAlias(t *testing.T) {
 	}
 	if _, err := Lookup("alias-collision-test", ""); err == nil {
 		t.Fatal("failed registration mutated language registry")
+	}
+}
+
+func TestRegisterDefineConcurrentAliasCollision(t *testing.T) {
+	const alias = "parallel-define-alias"
+	definitions := []Define{
+		{ID: "parallel-define-a", Ext: ".a", Aliases: []string{alias}, Find: []string{"tool-a"}},
+		{ID: "parallel-define-b", Ext: ".b", Aliases: []string{alias}, Find: []string{"tool-b"}},
+	}
+	t.Cleanup(func() {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		for _, definition := range definitions {
+			delete(registry, registryKey(definition.ID, definition.Version))
+		}
+		aliases = removeAlias(aliases, alias)
+	})
+
+	stopReaders := make(chan struct{})
+	readerReady := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		close(readerReady)
+		defer close(readerDone)
+		for {
+			select {
+			case <-stopReaders:
+				return
+			default:
+				Aliases()
+				ResolveAlias(alias)
+				Lookup(definitions[0].ID, definitions[0].Version)
+			}
+		}
+	}()
+	<-readerReady
+
+	start := make(chan struct{})
+	results := make(chan error, len(definitions))
+	var workers sync.WaitGroup
+	workers.Add(len(definitions))
+	for _, definition := range definitions {
+		go func() {
+			defer workers.Done()
+			<-start
+			results <- RegisterDefine(definition)
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	close(stopReaders)
+	<-readerDone
+
+	registered := 0
+	for err := range results {
+		if err == nil {
+			registered++
+			continue
+		}
+		if kind := xerr.KindFrom(err); kind != xerr.KindConflict {
+			t.Errorf("RegisterDefine error kind = %q; want Conflict: %v", kind, err)
+		}
+	}
+	if registered != 1 {
+		t.Fatalf("successful registrations = %d; want exactly one", registered)
+	}
+
+	id, version, ok := ResolveAlias(alias)
+	if !ok {
+		t.Fatal("the winning alias was not registered")
+	}
+	if _, err := Lookup(id, version); err != nil {
+		t.Fatalf("alias points to an unregistered language %q: %v", id, err)
+	}
+	for _, definition := range definitions {
+		_, err := Lookup(definition.ID, definition.Version)
+		if definition.ID == id && err != nil {
+			t.Errorf("winning language lookup failed: %v", err)
+		}
+		if definition.ID != id && err == nil {
+			t.Errorf("losing definition %q was partially registered", definition.ID)
+		}
+	}
+}
+
+func TestRegisterDefineDuplicateIDDiagnostic(t *testing.T) {
+	const id = "define-duplicate-diagnostic-test"
+	definition := Define{ID: id, Ext: ".x", Find: []string{"tool"}}
+	if err := RegisterDefine(definition); err != nil {
+		t.Fatalf("initial RegisterDefine: %v", err)
+	}
+	t.Cleanup(func() {
+		registryMu.Lock()
+		defer registryMu.Unlock()
+		delete(registry, id)
+	})
+	if err := RegisterDefine(definition); err == nil || err.Error() != "[Conflict] @lang.define define-duplicate-diagnostic-test: language already registered" {
+		t.Fatalf("duplicate RegisterDefine error = %v; want the established conflict message", err)
 	}
 }

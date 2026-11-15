@@ -45,6 +45,14 @@ func run(ctx context.Context, source string, input any) (any, error) {
 
 Hosts can inject process execution through `Executor` / `ExecutorFunc` and register profiles through `RegisterRunnerSpec` or `RegisterDefine`. Runner files remain NFlow declarations, shell profiles remain explicit, and source templates live with their language profiles. The core uses Kernel `xerr` classification for its errors. Python-specific source parsing, contract inspection, runner assets, and examples are grouped in [`languages/python/`](languages/python/README.md); Flow-specific integration remains in [`nexssflow/`](nexssflow/README.md).
 
+### Pre-1.0 API migration and safety contract
+
+The registry is private; the exported mutable `core.Registry` map has been removed. Use `Register`, `RegisterRunnerSpec`, or `RegisterDefine` to add languages, `Unregister(id, version)` for synchronized removal, `Lookup` for one language, and `RegisteredLanguages` for a stable, sorted list of defensive copies. `Register` now returns typed Kernel `Validation` errors for empty IDs and `Conflict` errors for duplicates; handle its error instead of relying on a panic. `Lookup` now returns a `core.Language` value rather than `*core.Language`. `Language.Spec()` and the returned profile slices are copies, so editing a lookup or listing result cannot mutate registered state. `Language.Select` has been removed; direct registrations must provide `SelectContext`.
+
+Installer callbacks are context-required: `Ensure.Ensure` now takes `(context.Context, core.Language, string)`, and `EnsureFunc` uses the same arguments. Update custom implementations by adding the context parameter, accepting the value form of `Language`, checking cancellation before starting work, and honoring it while work runs. `Resolve` and `Install` remain convenience wrappers backed by `context.Background`; use `ResolveContext` and `InstallContext` when cancellation matters. `Resolve` and `ResolveContext` also now accept `core.Language` values. Likewise, `Preflight.Run` is the non-cancelable convenience wrapper; use `RunContext` for cancellable work. `ContextEnsurer`, `ContextEnsureFunc`, and `DefaultContextEnsure` have been removed in favor of the single context-aware `Ensure` / `EnsureFunc` API and `DefaultEnsure`.
+
+Selector and codec callbacks are shared function values and may run concurrently; their implementations must be concurrency-safe. Cancellation is passed to every selector and installer on context-aware paths. The default installer uses `exec.CommandContext`, which targets the directly launched installer process; it does **not** guarantee that child processes or detached descendants stop, and it cannot roll back installation side effects already performed. Custom `Ensure` implementations must honor the context themselves.
+
 ## Inspect Python contracts and generate NFlow schemas
 
 The `nexss-lang` command statically inspects annotated Python dataclasses and `TypedDict` declarations, then maps them into the shared language-neutral model in `contract/`. Inspection uses Python's standard-library AST parser; it does not import or execute the inspected module. Python 3.8 or newer is required.
@@ -71,6 +79,19 @@ result, err := extract.Parse("service.py", source, "python", extract.Options{
 ```
 
 The callable signature is `func Parse(path string, src []byte, lang string, opts Options) (Result, error)`. The dispatcher currently supports Go, PHP, Python, Rust, JavaScript, TypeScript, JSX, TSX, Svelte, Vue, and Zig; Flow/NFlow documents pass through unchanged. Each extractor implementation lives in its matching package under `languages/` (`golang`, `php`, `python`, `rust`, `javascript`, `typescript`, `svelte`, `vue`, or `zig`). `Options` also supports indentation/blank-line cleanup, head/tail truncation, and signature-only output; `ProcessContent` and `Truncate` are available for callers that need the same text handling independently.
+
+NFlow projects that load the adapter can use the same parser through the typed `lang.extract` action. It takes `path`, `source`, `language`, and an optional `options` object, and returns `snippets`, `func_count`, and `content`; `path` is a logical parser filename, not a file to read:
+
+```nflow
+@require github.com/nexssp/lang/nexssflow vX.Y.Z
+{
+    path: "service.py",
+    language: "python",
+    source: "def run():\n    return 1\n",
+    options: { exported_only: true }
+}
+  -> lang.extract
+```
 
 ## Shells on Windows
 

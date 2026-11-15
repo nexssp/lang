@@ -2,6 +2,7 @@ package nexssflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/nexssp/flow/compiler"
@@ -10,9 +11,9 @@ import (
 )
 
 func TestDefineDirectiveRegistersRunner(t *testing.T) {
-	const id = "adapter-inline-define-test"
+	id := uniqueTestLanguageID(t)
 	lines := []string{
-		`@lang.define "adapter-inline-define-test" {`,
+		fmt.Sprintf("@lang.define %q {", id),
 		`  ext: ".txt"`,
 		`  find: ["cat"]`,
 		`  file_template: "{}"`,
@@ -25,7 +26,6 @@ func TestDefineDirectiveRegistersRunner(t *testing.T) {
 	if result.Next != len(lines) {
 		t.Fatalf("Next = %d; want %d", result.Next, len(lines))
 	}
-	t.Cleanup(func() { delete(core.Registry, id) })
 	language, err := core.Lookup(id, "")
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)

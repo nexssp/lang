@@ -24,7 +24,7 @@ func TestResolveRunCmdUsesDepsTemplateAndFreshFilePath(t *testing.T) {
 			Deps:       tool + " run {file}",
 			DepsMarker: "# /// script",
 		},
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			t.Fatal("ordinary interpreter should not be selected for a PEP 723 script")
 			return "", nil, nil
 		},
@@ -53,7 +53,7 @@ func TestResolveRunCmdUsesPlainInterpreterWithoutMarker(t *testing.T) {
 	lang := &Language{
 		ID:   "python",
 		spec: &RunnerSpec{ID: "python", Deps: "uv run {file}", DepsMarker: "# /// script"},
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			return "python3", []string{"-3"}, nil
 		},
 	}
@@ -69,11 +69,11 @@ func TestResolveRunCmdUsesPlainInterpreterWithoutMarker(t *testing.T) {
 
 func TestPreflightChecksDependencyRunner(t *testing.T) {
 	const id = "deps-preflight-test"
-	if _, exists := Registry[id]; exists {
+	if _, exists := registry[id]; exists {
 		t.Fatalf("test setup: %q already registered", id)
 	}
 	t.Setenv("PATH", "")
-	Register(Language{
+	registerTestLanguage(t, Language{
 		ID:  id,
 		Ext: ".py",
 		spec: &RunnerSpec{
@@ -81,12 +81,12 @@ func TestPreflightChecksDependencyRunner(t *testing.T) {
 			Deps:       "missing-uv-for-test run {file}",
 			DepsMarker: "# /// script",
 		},
-		Select: func(string) (string, []string, error) {
+		SelectContext: func(context.Context, string) (string, []string, error) {
 			t.Fatal("preflight should check uv instead of the ordinary interpreter")
 			return "", nil, nil
 		},
 	})
-	defer delete(Registry, id)
+	defer delete(registry, id)
 
 	report := Preflight{}.Run([]Program{{ID: id, Source: "# /// script\nprint(1)"}})
 	if report.OK() || len(report.Missing) != 1 {
