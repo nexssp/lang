@@ -3,8 +3,8 @@ module github.com/nexssp/lang
 go 1.27.4
 
 require (
-	github.com/nexssp/flow v0.80.0
-	github.com/nexssp/kernel v0.39.1
+	github.com/nexssp/flow v0.95.0
+	github.com/nexssp/kernel v0.40.3
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 )
 
@@ -15,7 +15,7 @@ require (
 	github.com/go-playground/universal-translator v0.18.2 // indirect
 	github.com/go-playground/validator/v10 v10.30.6 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
-	github.com/nexssp/validation v0.5.0 // indirect
+	github.com/nexssp/validation v0.6.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/mod v0.43.0 // indirect
