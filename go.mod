@@ -3,7 +3,7 @@ module github.com/nexssp/lang
 go 1.27.4
 
 require (
-	github.com/nexssp/flow v0.102.1
+	github.com/nexssp/flow v0.105.0
 	github.com/nexssp/kernel v1.0.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 )
